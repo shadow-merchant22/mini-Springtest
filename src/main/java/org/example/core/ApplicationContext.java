@@ -1,11 +1,16 @@
 package org.example.core;
 
+import org.example.annotation.Autowired;
 import org.example.annotation.Component;
 import org.example.annotation.Scope;
+import org.example.annotation.Value;
 import org.example.util.ClassScanner;
+import org.example.util.PropertiesLoader;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -16,11 +21,17 @@ public class ApplicationContext {
     private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>();
     /** 要扫描的包名 */
     private final String basePackage;
+    /** 配置文件中的属性 */
+    private final Properties properties;
 
-    public ApplicationContext(String basePackage) {
+    public ApplicationContext(String basePackage,String configFile) {
         this.basePackage = basePackage;
+        this.properties = PropertiesLoader.load(configFile);
         // 启动时刷新容器
         refresh();
+    }
+    public ApplicationContext(String basePackage){
+        this(basePackage,"application.properties");
     }
     /**
      * 容器启动流程
@@ -81,15 +92,80 @@ public class ApplicationContext {
     }
 
     /**
-     * 创建 Bean 实例（暂时只做实例化，依赖注入下一步再加）
+     * 创建 Bean 实例（暂时只做实例化，依赖注入下一步再加）+依赖注入（@Autowired 和 @Value）
      */
     private Object createBean(BeanDefinition beanDefinition){
         try {
-           return beanDefinition.getBeanClass().getDeclaredConstructor().newInstance();
+            Object bean = beanDefinition.getBeanClass().getDeclaredConstructor().newInstance();
+            //依赖注入
+            injectFields(bean);
+            return bean;
         }catch (Exception e){
             throw new RuntimeException("创建 Bean 失败: " + beanDefinition.getBeanName(), e);
         }
     }
+
+    /**
+     * 处理字段注入：
+     * - @Autowired：从容器中查找对应类型的 Bean 注入
+     * - @Value("${key}")：从配置文件中读取值注入
+     */
+    private void injectFields(Object bean) throws IllegalAccessException {
+        Class<?> clazz = bean.getClass();
+        for (Field field:clazz.getDeclaredFields()){
+            //处理@Autowired
+            if(field.isAnnotationPresent(Autowired.class)){
+                Object dependency = getBean(field.getType());
+                field.setAccessible(true);  // 突破 private 限制
+                //例如：
+                //这个 field 只是描述了 UserController 有一个叫 userService 的字段
+                //但它不知道是哪个 UserController 实例的,所以在set的时候需要传一个实例
+                field.set(bean,dependency);
+                System.out.println("注入 @Autowired: " + clazz.getSimpleName()
+                        + "." + field.getName() + " <- " + dependency.getClass().getSimpleName());
+            }
+            //处理@Value
+            if(field.isAnnotationPresent(Value.class)){
+                Value valueAnnotation = field.getAnnotation(Value.class);
+                String placeholder = valueAnnotation.value();
+                String key = placeholder.substring(placeholder.indexOf("{") + 1, placeholder.indexOf("}"));
+                String value = properties.getProperty(key);
+                if(value==null){
+                    continue;
+                }
+                field.setAccessible(true);
+                field.set(bean,convertValue(value,field.getType()));
+            }
+        }
+
+    }
+
+    /**
+     * 字符串转目标类型（简化版，支持基本类型和 String）
+     */
+    private Object convertValue(String value, Class<?> targetType) {
+        if (targetType == String.class) {
+            return value;
+        }
+        if (targetType == int.class || targetType == Integer.class) {
+            return Integer.parseInt(value);
+        }
+        if (targetType == long.class || targetType == Long.class) {
+            return Long.parseLong(value);
+        }
+        if (targetType == boolean.class || targetType == Boolean.class) {
+            return Boolean.parseBoolean(value);
+        }
+        if (targetType == double.class || targetType == Double.class) {
+            return Double.parseDouble(value);
+        }
+        if (targetType == float.class || targetType == Float.class) {
+            return Float.parseFloat(value);
+        }
+        // 其他类型直接返回字符串
+        return value;
+    }
+
 
     //注册一个BeanDefinition
     private void registerBeanDefinition(Class<?> clazz) {
