@@ -1,17 +1,13 @@
 package org.example.core;
 
-import org.example.annotation.Autowired;
-import org.example.annotation.Component;
-import org.example.annotation.Scope;
-import org.example.annotation.Value;
+import org.example.annotation.*;
+import org.example.aop.ProxyFactory;
 import org.example.util.ClassScanner;
 import org.example.util.PropertiesLoader;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ApplicationContext {
@@ -23,6 +19,8 @@ public class ApplicationContext {
     private final String basePackage;
     /** 配置文件中的属性 */
     private final Properties properties;
+    //存储所有的切面对象
+    private final List<Object> aspects=new ArrayList<>();
 
     public ApplicationContext(String basePackage,String configFile) {
         this.basePackage = basePackage;
@@ -48,12 +46,24 @@ public class ApplicationContext {
         System.out.println("注册了 " + beanDefinitionMap.size() + " 个 BeanDefinition");
 
         // 3. 预创建所有单例 Bean
-        for (String beanName:beanDefinitionMap.keySet()){
+        //先创建切面Aspect类
+        for (String beanName: beanDefinitionMap.keySet()){
             BeanDefinition beanDefinition = beanDefinitionMap.get(beanName);
-            if(beanDefinition.isSingleton()){
-                getBean(beanName);
+            if(beanDefinition.isSingleton()&&beanDefinition.getBeanClass().isAnnotationPresent(Aspect.class)){
+                Object bean = getBean(beanName);
+                aspects.add(bean);
+                System.out.println("发现切面: " + beanDefinition.getBeanClass().getSimpleName());
             }
         }
+        //再创建普通bean
+        for (String beanName:beanDefinitionMap.keySet()){
+            BeanDefinition beanDefinition = beanDefinitionMap.get(beanName);
+            if(beanDefinition.isSingleton()&&!beanDefinition.getBeanClass().isAnnotationPresent(Aspect.class)){
+                getBean(beanName);
+
+            }
+        }
+        System.out.println("发现切面"+aspects.size()+"个");
         System.out.println("单例 Bean 创建完成，共 " + singletonObjects.size() + " 个");
     }
     //根据名字获取bean
@@ -99,6 +109,18 @@ public class ApplicationContext {
             Object bean = beanDefinition.getBeanClass().getDeclaredConstructor().newInstance();
             //依赖注入
             injectFields(bean);
+            //AOP增强（带有@Aspect的切面类本身无需代理）
+            if(!beanDefinition.getBeanClass().isAnnotationPresent(Aspect.class)){
+                for (Object aspect:aspects){
+                    Object proxy = ProxyFactory.createProxy(bean, aspect);
+                    //当代理成功时替换
+                    if(bean!=proxy){
+                        bean=proxy;
+                        System.out.println("AOP为"+beanDefinition.getBeanName()+"创建了代理");
+                    }
+                }
+            }
+
             return bean;
         }catch (Exception e){
             throw new RuntimeException("创建 Bean 失败: " + beanDefinition.getBeanName(), e);
